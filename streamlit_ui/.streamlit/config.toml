@@ -1,0 +1,8 @@
+[server]
+port = 8502
+enableCORS = false
+
+[theme]
+primaryColor = "#FF6B6B"
+backgroundColor = "#FFFFFF"
+font = "sans serif"
