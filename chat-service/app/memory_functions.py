@@ -104,6 +104,24 @@ async def get_semantically_similar_memories(
     sims.sort(key=lambda x: x["sim"], reverse=True)
     return sims[:top_k]
 
+
+async def get_highest_rfm_memories(user_id: str, top_k: int) -> list[str]:
+    """
+    Return top_k memory_texts with the highest RFM scores for the given user.
+    """
+    resp = await asyncio.to_thread(
+        lambda: supabase.table("persona_category")
+                        .select("memory_text")
+                        .eq("user_id", user_id)
+                        .order("RFM_score", desc=True)
+                        .limit(top_k)
+                        .execute()
+    )
+
+    return [row["memory_text"] for row in (resp.data or [])]
+
+
+
 async def generate_candidate_memories(
     user_id: str,
     user_msg: str,
