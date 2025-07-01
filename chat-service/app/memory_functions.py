@@ -4,11 +4,13 @@ import os
 import json
 import asyncio
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from supabase import create_client
+
+from .RFM_functions import get_magnitude_for_query, get_recency_score, get_rfm_score
 
 # Load env variables
 load_dotenv()
@@ -102,6 +104,24 @@ async def get_semantically_similar_memories(
     sims.sort(key=lambda x: x["sim"], reverse=True)
     return sims[:top_k]
 
+
+async def get_highest_rfm_memories(user_id: str, top_k: int) -> list[str]:
+    """
+    Return top_k memory_texts with the highest RFM scores for the given user.
+    """
+    resp = await asyncio.to_thread(
+        lambda: supabase.table("persona_category")
+                        .select("memory_text")
+                        .eq("user_id", user_id)
+                        .order("RFM_score", desc=True)
+                        .limit(top_k)
+                        .execute()
+    )
+
+    return [row["memory_text"] for row in (resp.data or [])]
+
+
+
 async def generate_candidate_memories(
     user_id: str,
     user_msg: str,
@@ -132,14 +152,17 @@ async def update_user_memory(candidate: str, user_id: str) -> str:
     """
     Decide add/merge/override and update Supabase accordingly.
     """
+    now = datetime.now(timezone.utc)
     sims = await get_semantically_similar_memories(user_id, candidate)
     alias = {str(i+1): sim["id"] for i, sim in enumerate(sims)}
     formatted = [f"[{i+1}] {sim['text']}" for i, sim in enumerate(sims)]
     if not sims:
         emb = await get_embedding(candidate)
+        magnitude = await get_magnitude_for_query(candidate)
+        rfm = get_rfm_score(now, frequency=1, magnitude=magnitude)
         await asyncio.to_thread(
             lambda: supabase.table("persona_category")
-                          .insert({"user_id":user_id,"memory_text":candidate,"embedding":json.dumps(emb)})
+                          .insert({"user_id":user_id,"memory_text":candidate,"embedding":json.dumps(emb), "magnitude": magnitude, "last_used": now, "frequency": 1, "RFM_score": rfm})
                           .execute()
         )
         return "Memory added."
@@ -152,9 +175,11 @@ async def update_user_memory(candidate: str, user_id: str) -> str:
     dec = client.models.generate_content(model="gemini-2.5-flash", contents=prompt).text.strip().lower()
     if dec == "add":
         emb = await get_embedding(candidate)
+        magnitude = await get_magnitude_for_query(candidate)
+        rfm = get_rfm_score(now, frequency=1, magnitude=magnitude)
         await asyncio.to_thread(
             lambda: supabase.table("persona_category")
-                          .insert({"user_id":user_id,"memory_text":candidate,"embedding":json.dumps(emb)})
+                          .insert({"user_id":user_id,"memory_text":candidate,"embedding":json.dumps(emb), "magnitude": magnitude, "last_used": now, "frequency": 1, "RFM_score": rfm})
                           .execute()
         )
         return "Memory added."
@@ -163,23 +188,47 @@ async def update_user_memory(candidate: str, user_id: str) -> str:
         for idx in idxs:
             id_ = alias.get(idx)
             if id_:
+                existing_row = await asyncio.to_thread(
+                    lambda: supabase.table("persona_category")
+                                .select("frequency")
+                                .eq("id", id_)
+                                .single()
+                                .execute()
+                )
+                existing_freq = existing_row.data.get("frequency", 1)
+
+            
                 merged = sims[int(idx)-1]["text"] + "\n" + candidate
                 emb = await get_embedding(merged)
+                magnitude = await get_magnitude_for_query(merged)
+                rfm = get_rfm_score(now, frequency= existing_freq+1, magnitude=magnitude)
                 await asyncio.to_thread(
                     lambda: supabase.table("persona_category")
-                                  .update({"memory_text":merged,"embedding":json.dumps(emb)})
+                                  .update({"memory_text":merged,"embedding":json.dumps(emb), "magnitude": magnitude, "last_used": now, "frequency": existing_freq +1, "RFM_score": rfm})
                                   .eq("id", id_).execute()
                 )
         return f"Merged with {len(idxs)}."
     if dec.startswith("override:"):
         idxs = [i.strip() for i in dec.replace("override:","").split(",")]
         emb = await get_embedding(candidate)
+        magnitude = await get_magnitude_for_query(candidate)
         for idx in idxs:
             id_ = alias.get(idx)
             if id_:
+                existing_row = await asyncio.to_thread(
+                    lambda: supabase.table("persona_category")
+                                .select("frequency")
+                                .eq("id", id_)
+                                .single()
+                                .execute()
+                )
+                existing_freq = existing_row.data.get("frequency", 1)
+
+                rfm = get_rfm_score(now, frequency= existing_freq+1, magnitude=magnitude)
+                
                 await asyncio.to_thread(
                     lambda: supabase.table("persona_category")
-                                  .update({"memory_text":candidate,"embedding":json.dumps(emb)})
+                                  .update({"memory_text":candidate,"embedding":json.dumps(emb), "magnitude": magnitude, "last_used": now, "frequency": existing_freq +1, "RFM_score": rfm})
                                   .eq("id", id_).execute()
                 )
         return f"Overridden {len(idxs)}."
