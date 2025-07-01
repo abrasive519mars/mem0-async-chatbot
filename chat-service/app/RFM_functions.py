@@ -1,11 +1,17 @@
 import google.generativeai as genai
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
+from dotenv import load_dotenv
+import os
+
+load_dotenv()    
+
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+model = genai.GenerativeModel("models/gemini-1.5-flash")
 
 
 #Magnitude function
 async def get_magnitude_for_query(prompt: str) -> float:
-    model = genai.GenerativeModel("models/gemini-1.5-flash")
 
     prompt_text = f"""
 You are an expert assistant evaluating how important or urgent a given user prompt is.
@@ -78,11 +84,4 @@ def get_rfm_score(recency_timestamp: str, frequency: int, magnitude: float) -> f
     recency_score = get_recency_score(recency_timestamp)  # Uses existing recency function
     rfm_score = recency_score * 0.3 + frequency * 0.2 + magnitude * 0.5
     return round(rfm_score, 2)
-
-
-
-
-
-
-
 
