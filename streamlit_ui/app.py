@@ -1,78 +1,31 @@
+# streamlit_ui/app.py
 import streamlit as st
-import requests
-import os
-from dotenv import load_dotenv
+from config import CHAT_API_URL
+from utils import render_chat_tab
 
-# Load .env variables once at startup
-load_dotenv()
-API_BASE_URL = os.getenv("CHAT_API_URL", "http://localhost:8001")
-CHAT_ENDPOINT = f"{API_BASE_URL}/chat"
+st.set_page_config(
+    page_title="Memory-Enhanced Chatbot",
+    page_icon="🤖",
+    layout="wide"
+)
 
-# 1) Basic page config
-st.set_page_config(page_title="Simple Memory Chat", layout="wide")
-
-# 2) First‐time User ID prompt
+# 1. Prompt for user_id on first load
 if "user_id" not in st.session_state:
-    st.session_state.user_id = ""
-if not st.session_state.user_id:
-    st.title("Enter Your User ID")
-    entry = st.text_input("User ID", "")
-    if st.button("Continue"):
-        if entry.strip():
-            st.session_state.user_id = entry.strip()
-            st.rerun()
-        else:
-            st.error("Please enter a non-empty User ID.")
+    st.title("🔐 Enter User ID")
+    uid = st.text_input("User ID")
+    if uid:
+        st.session_state.user_id = uid
+        st.rerun()  # Changed from st.experimental_rerun()
     st.stop()
 
-# 3) Initialize conversation state
-if "messages" not in st.session_state:
-    st.session_state.messages = []       # list of {"role","content"}
-if "awaiting_reply" not in st.session_state:
-    st.session_state.awaiting_reply = False
+st.title(f"💬 Chatbot Dashboard — User: {st.session_state.user_id}")
 
-# 4) Sidebar shows your User ID
-st.sidebar.markdown(f"**User ID:** {st.session_state.user_id}")
+# 2. Tabs for each endpoint
+tabs = st.tabs(["🔍 Semantic Memory", "📊 RFM Only", "🔗 RFM + Semantic"])
+endpoints = ["chat-semantic", "chat-rfm", "chat-rfm-semantic"]
+history_keys = ["semantic_history", "rfm_history", "combined_history"]
 
-# 5) Title & transcript
-st.title("💬 Memory-Enhanced Chatbot")
-for msg in st.session_state.messages:
-    who = "You" if msg["role"] == "user" else "Bot"
-    st.markdown(f"**{who}:** {msg['content']}")
-
-# 6) Input form (only when not waiting for a reply)
-if not st.session_state.awaiting_reply:
-    with st.form("chat_form", clear_on_submit=True):
-        user_input = st.text_input("Your message")
-        send = st.form_submit_button("Send")
-    if send and user_input:
-        # record your message
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        # block further input until bot responds
-        st.session_state.awaiting_reply = True
-
-        # call FastAPI /chat
-        try:
-            resp = requests.post(
-                CHAT_ENDPOINT,
-                json={
-                    "user_id": st.session_state.user_id,
-                    "user_input": user_input
-                },
-                timeout=15
-            )
-            resp.raise_for_status()
-            bot_reply = resp.json().get("reply", "(no reply)")
-        except Exception as e:
-            bot_reply = f"Error: {e}"
-
-        # record bot's reply and re‐enable input
-        st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-        st.session_state.awaiting_reply = False
-
-        # re‐run to show the new reply immediately
-        st.rerun()
-
-else:
-    st.info("⏳ Waiting for bot response...")
-
+# 3. Render each tab
+for tab, ep, key in zip(tabs, endpoints, history_keys):
+    with tab:
+        render_chat_tab(ep, key, CHAT_API_URL)

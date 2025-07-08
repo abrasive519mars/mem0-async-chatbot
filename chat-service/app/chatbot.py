@@ -20,8 +20,8 @@ async def get_bot_response_from_memory(user_id: str, user_input: str) -> str:
         [f"User: {r['user_message']}\nBot: {r['bot_response']}" for r in recent]
     )
     prompt = (
-        "You are an assistant with memory. "
-        "Use the following memories and recent chat to respond:\n\n"
+        "You are an conversational assistant with memory. "
+        "Use the following memories and recent chat to respond in a context-aware, relevant manner.:\n\n"
         f"Memories:\n{memories_block}\n\n"
         f"Recent Chat:\n{history_block}\n\n"
         f"User: {user_input}\nBot:"
@@ -50,13 +50,17 @@ async def get_bot_response_rfm(user_id: str, user_input: str) -> str:
         [f"User: {r['user_message']}\nBot: {r['bot_response']}" for r in recent]
     )
 
-    prompt = (
-        "You are an assistant with memory. "
-        "Use the following high-RFM memories and recent chat to respond:\n\n"
-        f"Top Memories:\n{memories_block}\n\n"
-        f"Recent Chat:\n{history_block}\n\n"
-        f"User: {user_input}\nBot:"
-    )
+    # Create RFM-aware prompt
+    prompt = f"""You are a helpful assistant with access to the user's important memories ranked by recency, frequency, and magnitude.
+
+    Recent Chat History: {history_block}
+
+    Relevant Memories (ranked by RFM score):
+    {memories_block}
+
+    Current User Input: {user_input}
+
+    Respond based on the user's most important and recently accessed memories."""
 
     # 4. Generate the response
     response = client.models.generate_content(
@@ -80,29 +84,33 @@ async def get_bot_response_combined(user_id: str, user_input: str) -> str:
 
     # === Format memory blocks ===
     rfm_block = (
-        "\n- " + "\n- ".join([m["memory_text"] for m in rfm_memories])
+        "\n- ".join(rfm_memories)
         if rfm_memories else "No high-RFM memories available."
     )
     semantic_block = (
-        "\n- " + "\n- ".join([m["text"] for m in semantic_memories])
+        "\n- ".join([m["text"] for m in semantic_memories])
         if semantic_memories else "No semantically similar memories found."
     )
     history_block = "\n".join(
         [f"User: {m['user_message']}\nBot: {m['bot_response']}" for m in recent]
     ) if recent else "No chat history."
 
-    # === Construct prompt ===
-    prompt = f"""You are a helpful assistant with memory.
-            Use the following three sources of context to reply to the user.
-            
-            RFM-Based Important Memories: {rfm_block}
-            
-            Semantically Similar Memories: {semantic_block}
-            
-            Recent Chat History: {history_block}
+    # Create comprehensive prompt
+    prompt = f"""You are a helpful conversational assistant with access to both semantically relevant memories and the user's most important memories.
 
-            User: {user_input}
-            Bot:"""
+    Recent Chat History:
+    {history_block}
+
+    Semantically Relevant Memories:
+    {semantic_block}
+
+    Important Memories (ranked by RFM):
+    {rfm_block}
+
+    Current User Input: {user_input}
+
+    Given all of this, respond in a context aware, relevant manner to the current user input. Using both the conversation context and the most relevant memories from both sources. """
+
 
     # 4. Generate response using Gemini
     response = client.models.generate_content(

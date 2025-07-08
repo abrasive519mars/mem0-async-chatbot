@@ -1,4 +1,4 @@
-import google.generativeai as genai
+from google import genai
 import asyncio
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -6,8 +6,7 @@ import os
 
 load_dotenv()    
 
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-model = genai.GenerativeModel("models/gemini-1.5-flash")
+client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
 #Magnitude function
@@ -32,7 +31,7 @@ Only output a single number between 0 and 5.
 """
 
     try:
-        response = await asyncio.to_thread(model.generate_content, prompt_text)
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt_text)
         magnitude = float(response.text.strip())
         return round(max(0, min(5, magnitude)), 2)
     except Exception as e:
@@ -43,7 +42,7 @@ Only output a single number between 0 and 5.
 #Recency Function
 def get_recency_score(timestamp_input) -> int:
     """
-    Computes a recency score (1–5) based on how many days ago the timestamp was.
+    Computes a recency score (1-5) based on how many days ago the timestamp was.
     Accepts either a datetime object or an ISO 8601 string.
     """
     # Convert string to datetime if needed
@@ -76,8 +75,6 @@ def get_recency_score(timestamp_input) -> int:
         return 2
     else:
         return 1
-
-
 
 #RFM score function
 def get_rfm_score(recency_timestamp: str, frequency: int, magnitude: float) -> float:

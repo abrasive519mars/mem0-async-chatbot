@@ -1,17 +1,15 @@
 import os, json, asyncio
 from dotenv import load_dotenv
 import aio_pika
+
+load_dotenv()
+RABBIT_URL = os.getenv("RABBITMQ_URL")
+
+# Import your memory functions at the top as before
 from .memory_functions import (
     generate_candidate_memories,
     update_user_memory,
     log_message
-)
-
-load_dotenv()
-RABBIT_URL = (
-    f"amqp://{os.getenv('RABBITMQ_USER')}:"
-    f"{os.getenv('RABBITMQ_PASSWORD')}@"
-    f"{os.getenv('RABBITMQ_HOST')}:{os.getenv('RABBITMQ_PORT')}/"
 )
 
 async def on_message(msg: aio_pika.IncomingMessage):
@@ -30,13 +28,21 @@ async def on_message(msg: aio_pika.IncomingMessage):
         print(f"✅ Processed task for {user_id}")
 
 async def main():
-    conn = await aio_pika.connect_robust(RABBIT_URL)
-    channel = await conn.channel()
-    await channel.set_qos(prefetch_count=1)
-    queue = await channel.declare_queue("memory_tasks", durable=True)
-    await queue.consume(on_message)
-    print("🔄 Memory worker started. Waiting for messages...")
-    await asyncio.Future()  # Keep running
+    while True:
+        try:
+            # Try to connect and set up the channel and queue
+            conn = await aio_pika.connect_robust(RABBIT_URL)
+            print("Connected to RabbitMQ!")
+            channel = await conn.channel()
+            await channel.set_qos(prefetch_count=1)
+            queue = await channel.declare_queue("memory_tasks", durable=True)
+            await queue.consume(on_message)
+            print("🔄 Memory worker started. Waiting for messages...")
+            await asyncio.Future()  # Keep running
+        except Exception as e:
+            print(f"Failed to connect to RabbitMQ or set up queue: {e}")
+            print("Retrying in 3 seconds...")
+            await asyncio.sleep(3)
 
 if __name__ == "__main__":
     asyncio.run(main())
