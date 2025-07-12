@@ -1,48 +1,90 @@
 from google import genai
 import os
+import time
+import asyncio
 
 from .memory_functions import fetch_last_m_messages, get_semantically_similar_memories, get_highest_rfm_memories
 
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
+from datetime import datetime, timezone
 
-async def get_bot_response_from_memory(user_id: str, user_input: str) -> str:
+
+async def get_bot_response_from_memory(user_id: str, user_input: str) -> dict:
+    fetch_start = time.perf_counter()
     # 1. Fetch recent chat history
-    recent = await fetch_last_m_messages(user_id, m=5)
-    # 2. Retrieve top-3 semantically similar memories
-    sims = await get_semantically_similar_memories(user_id, user_input, top_k=3)
-    memories_block = (
-        "\n- " + "\n- ".join([m["text"] for m in sims])
-        if sims else "No relevant memories."
+    recent_task = fetch_last_m_messages(user_id, m=10)
+    # 2. Retrieve top-5 semantically similar memories
+    semantic_task = get_semantically_similar_memories(user_id, user_input, top_k=5)
+    recent, sims = await asyncio.gather(
+        recent_task, semantic_task
     )
+    fetch_elapsed = time.perf_counter() - fetch_start
+
+    semantic_block = "\n" + "\n".join(
+    f"{mem['text']}| Similarity score:{mem['sim']} | Temporal relevance:(added {mem['created_at']}, last retrieved {mem['last_used']})"
+    for mem in sims
+)
+
     # 3. Construct the LLM prompt
     history_block = "\n".join(
-        [f"User: {r['user_message']}\nBot: {r['bot_response']}" for r in recent]
+        [f"Timestamp: {r['timestamp']}\nUser: {r['user_message']}\nBot: {r['bot_response']}" for r in recent]
     )
-    prompt = (
-        "You are an conversational assistant with memory. "
-        "Use the following memories and recent chat to respond in a context-aware, relevant manner.:\n\n"
-        f"Memories:\n{memories_block}\n\n"
-        f"Recent Chat:\n{history_block}\n\n"
-        f"User: {user_input}\nBot:"
-    )
+    prompt = f"""
+You are an engaging, friendly, and attentive conversational assistant. Your goal is to provide helpful, specific, and context-aware responses that feel natural and human.
+
+**Your personality:** Curious, empathetic, and adaptive. Match the user's tone and energy. Use humor or encouragement when appropriate.
+
+**Your tools:**
+- Semantically relevant memories: Use these to recall user preferences, experiences, or facts.
+- Recent chat history: Maintain conversational flow and continuity.
+
+**Instructions:**
+- Reference relevant memories if helpful to personalize your response.
+- Build on the ongoing conversation, referencing previous messages like you are in a conversation.
+- If you’re unsure, ask a clarifying question or offer a thoughtful suggestion.
+- Avoid generic or repetitive answers from recent chat, only build on it; be as specific and vivid as possible.
+- Respond in a warm, conversational tone. Do not mention that you are an AI.
+
+**Context:**
+Recent Chat:
+{history_block}
+
+Semantically Relevant Memories:
+{semantic_block}
+
+Current User Input:
+{user_input}
+
+Respond to the user now.
+"""
+    
+    response_start = time.perf_counter()
     # 4. Generate the response
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    return response.text.strip()
+    model="gemini-2.5-flash",
+    contents=prompt
+)
 
-async def get_bot_response_rfm(user_id: str, user_input: str) -> str:
+    response_elapsed = time.perf_counter() - response_start
+    return {'response':response.text.strip(), 'fetch_time':fetch_elapsed, 'response_time': response_elapsed, 'memories_retrieved':{'semantic': semantic_block}}
+
+
+async def get_bot_response_rfm(user_id: str, user_input: str) -> dict:
+    fetch_start = time.perf_counter()
     # 1. Fetch recent chat history
-    recent = await fetch_last_m_messages(user_id, m=5)
+    recent_task = fetch_last_m_messages(user_id, m=10)
 
     # 2. Fetch top 3 highest RFM score memories
-    top_memories = await get_highest_rfm_memories(user_id=user_id, top_k=3)
+    rfm_task = get_highest_rfm_memories(user_id=user_id, top_k=3)
+    recent, rfm_memories = await asyncio.gather(
+        recent_task, rfm_task)
+    fetch_elapsed = time.perf_counter() - fetch_start
 
-    memories_block = (
-        "\n- " + "\n- ".join(str(m) for m in top_memories)
-        if top_memories else "No high RFM memories available."
+    rfm_block = (
+        "\n" + "\n".join(f"{mem['text']} | RFM score:{mem['rfm_score']} "
+    for mem in rfm_memories)
+        if rfm_memories else "No high-RFM memories available."
     )
 
     # 3. Construct the LLM prompt
@@ -51,73 +93,119 @@ async def get_bot_response_rfm(user_id: str, user_input: str) -> str:
     )
 
     # Create RFM-aware prompt
-    prompt = f"""You are a helpful assistant with access to the user's important memories ranked by recency, frequency, and magnitude.
+    prompt = f"""
+You are an engaging, helpful assistant with a strong memory for what matters most to the user. Your responses should be context-aware, specific, and feel genuinely conversational.
 
-    Recent Chat History: {history_block}
+**Your personality:** Friendly, supportive, and attentive to details the user cares about.
 
-    Relevant Memories (ranked by RFM score):
-    {memories_block}
+**Your tools:**
+- High-RFM memories: Use these to understand what is most important and frequently discussed by the user.
+- Recent chat history: Reference previous exchanges to maintain continuity.
 
-    Current User Input: {user_input}
+**Instructions:**
+- Use high-RFM memories to ground your response in the user's top interests, needs, or concerns.
+- Reference recent chat to maintain flow and context.
+- Be specific, avoid generic statements, and personalize your reply.
+- If appropriate, ask a thoughtful follow-up question or offer a relevant suggestion.
+- Maintain a warm, conversational tone. Do not mention that you are an AI.
 
-    Respond based on the user's most important and recently accessed memories."""
+**Context:**
+Recent Chat:
+{history_block}
 
+Important Memories (ranked by RFM):
+{rfm_block}
+
+Current User Input:
+{user_input}
+
+Respond to the user now.
+"""
+
+    response_start = time.perf_counter()
     # 4. Generate the response
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+    model="gemini-2.5-flash",
+    contents=prompt
+)
+    response_elapsed = time.perf_counter() - response_start
+    return {'response':response.text.strip(), 'fetch_time':fetch_elapsed, 'response_time': response_elapsed, 'memories_retrieved':{'rfm': rfm_block}}
 
-    return response.text.strip()
 
 
-
-async def get_bot_response_combined(user_id: str, user_input: str) -> str:
+async def get_bot_response_combined(user_id: str, user_input: str) -> dict:
+    fetch_start = time.perf_counter()
     # 1. Fetch recent chat history
-    recent = await fetch_last_m_messages(user_id, m=5)
+    recent_task = fetch_last_m_messages(user_id, m=10)
 
     # 2. Fetch top RFM memories
-    rfm_memories = await get_highest_rfm_memories(user_id, top_k=3)
+    rfm_task = get_highest_rfm_memories(user_id, top_k=3)
 
     # 3. Fetch top semantic memories based on current user input
-    semantic_memories = await get_semantically_similar_memories(user_id, user_input, top_k=3)
+    semantic_task = get_semantically_similar_memories(user_id, user_input, top_k=5)
+    
+    recent, rfm_memories, semantic_memories = await asyncio.gather(
+        recent_task, rfm_task, semantic_task
+    )
 
+    fetch_elapsed = time.perf_counter() - fetch_start
     # === Format memory blocks ===
     rfm_block = (
-        "\n- ".join(rfm_memories)
+        "\n" + "\n".join(f"{mem['text']} | RFM score:{mem['rfm_score']} "
+    for mem in rfm_memories)
         if rfm_memories else "No high-RFM memories available."
     )
-    semantic_block = (
-        "\n- ".join([m["text"] for m in semantic_memories])
-        if semantic_memories else "No semantically similar memories found."
-    )
+    
+    semantic_block = "\n" + "\n".join(
+    f"{mem['text']}| Similarity score:{mem['sim']} | Temporal relevance:(added {mem['created_at']}, last retrieved {mem['last_used']})"
+    for mem in semantic_memories
+)
+
     history_block = "\n".join(
         [f"User: {m['user_message']}\nBot: {m['bot_response']}" for m in recent]
     ) if recent else "No chat history."
 
     # Create comprehensive prompt
-    prompt = f"""You are a helpful conversational assistant with access to both semantically relevant memories and the user's most important memories.
+    prompt = f"""You are an engaging, friendly, and attentive conversational assistant. Your goal is to provide helpful, specific, and context-aware responses that feel natural and human.
 
-    Recent Chat History:
-    {history_block}
+**Your personality:** Curious, empathetic, and adaptive. Match the user's tone and energy. Use humor or encouragement when appropriate.
 
-    Semantically Relevant Memories:
-    {semantic_block}
+**Your tools:**
+- Semantically relevant memories: Use these to recall user preferences, experiences, or facts.
+- High-RFM memories: Use these to understand what matters most to the user.
+- Recent chat history: Maintain conversational flow and continuity.
 
-    Important Memories (ranked by RFM):
-    {rfm_block}
+**Instructions:**
+- Reference relevant memories if helpful to personalize your response.
+- Build on the ongoing conversation, referencing previous messages like you are in a conversation.
+- If you’re unsure, ask a clarifying question or offer a thoughtful suggestion.
+- Avoid generic or repetitive answers from recent chat, only build on it; be as specific and vivid as possible.
+- Respond in a warm, conversational tone. Do not mention that you are an AI. Sound like youre speaking in a natural conversation.
 
-    Current User Input: {user_input}
+**Context:**
+Recent Chat:
+{history_block}
 
-    Given all of this, respond in a context aware, relevant manner to the current user input. Using both the conversation context and the most relevant memories from both sources. """
+Semantically Relevant Memories:
+{semantic_block}
 
+Important Memories (ranked by Recency, Frequency, Magnitude score):
+{rfm_block}
 
+Current User Input:
+{user_input}
+
+Respond to the user now.
+ """
+
+    response_start = time.perf_counter()
     # 4. Generate response using Gemini
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+    model="gemini-2.5-flash",
+    contents=prompt
+)
+    response_elapsed = time.perf_counter() - response_start
 
-    return response.text.strip()
+    return {'response':response.text.strip(), 'fetch_time': fetch_elapsed, 'response_time':response_elapsed, 'memories_retrieved':{'semantic':semantic_block, 'rfm': rfm_block}}
 
     
