@@ -150,6 +150,19 @@ async def get_semantically_similar_memories(
         if bump_metadata:
             redis_client.hincrby(key, "frequency", 1)
             redis_client.hset(key, "last_used", now_iso)
+            try:
+                freq = int(redis_client.hget(key, "frequency"))
+            except:
+                freq = 5    
+            try:
+                magnitude = float(redis_client.hget(key, "magnitude"))
+            except (TypeError, ValueError):
+                magnitude = 1.0
+            recency_timestamp = now_iso
+            rfm_score = get_rfm_score(recency_timestamp, freq, magnitude)
+            redis_client.hset(key, "rfm_score", rfm_score)
+
+
         results.append({
             "id": getattr(doc, "id", None),
             "text": getattr(doc, "memory_text", None),
