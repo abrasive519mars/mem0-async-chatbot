@@ -14,6 +14,7 @@ This project is an **LLM-powered, context-sensitive chatbot stack** that integra
 ---
 
 ## 🏗️ Architecture Overview
+<img width="1470" height="1161" alt="Screenshot 2025-07-16 164149" src="https://github.com/user-attachments/assets/611fb56c-ac49-42fe-a366-94e441fb3d20" />
 
 Below is a visual summary of the system, illustrating:
 
@@ -23,7 +24,7 @@ Below is a visual summary of the system, illustrating:
 - Semantic & RFM retrieval  
 - Asynchronous background processing  
 
-> _[Insert architecture image here]_  
+>  
 
 ---
 
