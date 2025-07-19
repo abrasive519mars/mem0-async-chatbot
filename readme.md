@@ -1,252 +1,331 @@
-Context-Aware Chatbot Service
-Welcome to the Chatbot Service repository!
-This project is an LLM-powered, context-sensitive chatbot stack that integrates semantic memory, RFM-based relevance, Redis caching, FastAPI endpoints, Supabase/Postgres for persistence, and RabbitMQ-powered asynchronous message/memory logging.
+# 🤖 Context-Aware Chatbot Service
 
-🏗️ Architecture Overview
-Below is a visual summary of the system, illustrating the login/logout flows, chat API, Redis caching, semantic/RFM retrieval, and asynchronous processing backbone.
+Welcome to the **Chatbot Service** repository!
 
-[image:2]
+This project is an **LLM-powered, context-sensitive chatbot stack** that integrates:
 
-📦 Features
-Conversational FastAPI server: RFM and semantic memory-aware endpoints for engaging dialog.
+- ✨ Semantic memory  
+- 🧠 RFM-based relevance scoring  
+- ⚡ Redis caching  
+- 🚀 FastAPI endpoints  
+- 📦 Supabase/Postgres for persistence  
+- 🐇 RabbitMQ-powered asynchronous message/memory logging  
 
-Supabase/Postgres integration: Persist chat logs and memories.
+---
 
-Redis caching layer: Ultra-fast session/stateful memory for chat state and context.
+## 🏗️ Architecture Overview
 
-RabbitMQ queues: Decoupled, scalable message and memory background workers.
+Below is a visual summary of the system, illustrating:
 
-Automatic user memory management: Extract, consolidate, merge, or override user memories using LLMs.
+- Login/logout flows  
+- Chat APIs  
+- Redis caching  
+- Semantic & RFM retrieval  
+- Asynchronous background processing  
 
-Periodic queue/Redis cleanup: Efficient resource management.
+> _[Insert architecture image here]_  
 
-Pluggable embedding & LLM: Uses Google's Gemini and Embeddings API via genai.
+---
 
-Environment-configurable: All sensitive tokens/keys in .env.
+## 📦 Features
 
-🛠️ Getting Started
-1. Environment Setup
-Clone this repository and enter the root.
+- **Conversational FastAPI server**: RFM and semantic memory-aware endpoints for engaging dialog  
+- **Supabase/Postgres integration**: Persist chat logs and memories  
+- **Redis caching layer**: Ultra-fast session/stateful memory for chat state and context  
+- **RabbitMQ queues**: Decoupled, scalable message and memory background workers  
+- **Automatic memory management**: Extract, consolidate, merge, or override memories using LLMs  
+- **Periodic queue/Redis cleanup**: Efficient resource management  
+- **Pluggable embedding & LLM support**: Uses Google’s Gemini & Embeddings API  
+- **Environment-configurable**: All tokens/keys in `.env`  
 
-Ensure you have:
+---
 
-Python 3.10+ (recommended)
+## 🛠️ Getting Started
 
-Redis server
+### 1. Environment Setup
 
-Supabase/Postgres instance
+Clone the repo and enter the root:
 
-RabbitMQ server
+```bash
+git clone <repo_url>
+cd chat-service
+cd app
+```
 
-Install Python dependencies:
+**Ensure you have:**
 
-bash
+- Python 3.10+  
+- Redis server  
+- Supabase/Postgres instance  
+- RabbitMQ server  
+
+**Install dependencies:**
+
+```bash
 pip install -r requirements.txt
-Set up .env:
-Fill in your API and database/RabbitMQ credentials:
+```
 
-text
-#Google API
-GOOGLE_API_KEY=AIzaSyDzuQhoyZfAbWsyyqIv8HF0G0R_gA5f3F0
+Set up `.env`:  
+Create a `.env` file in the root with:
 
-#Database
-SUPABASE_URL=
-SUPABASE_KEY=
+```bash
+# Google API
+GOOGLE_API_KEY=your_google_genai_api_key
 
-#RabbitMQ URL 
-RABBITMQ_API_URL=http://34.131.220.37:15672/api/queues 
+# Supabase
+SUPABASE_URL=your_supabase_project_url
+SUPABASE_KEY=your_supabase_service_role_key
+
+# RabbitMQ
 RABBITMQ_URL=amqp://myadmin:strongpassword@34.131.220.37:5672/
+RABBITMQ_API_URL=http://34.131.220.37:15672/api/queues
 RABBITMQ_API_USER=myadmin
 RABBITMQ_API_PASS=strongpassword
 
-
+# Redis
 REDIS_HOST=34.131.107.77
 REDIS_PORT=6379
 
-# Application settings
+# App Settings
 ENV=development
 LOG_LEVEL=debug
+```
 
-2. Run the Services
-Start the FastAPI server:
+---
 
-bash
+### 2. Run the Services
+
+Start FastAPI server:
+
+```bash
 uvicorn chat-service.app.main:app --reload --port 8000
-Start the message worker:
+```
 
-bash
+Start message worker:
+
+```bash
 python -m app.message_worker
-Start the memory worker:
+```
 
-bash
+Start memory worker:
+
+```bash
 python -m app.memory_worker
-Start the queue cleanup utility:
+```
 
-bash
+Start periodic queue cleanup:
+
+```bash
 python -m app.queue_cleanup
-All services must share access to your .env variables.
+```
 
-🚦 API Usage
-Endpoints
-1. POST /login
-Purpose: Loads user memories & chats from Supabase into Redis on login.
+> 💡 Make sure all services share access to your `.env` variables.
 
-Request: { "user_id": string }
+---
 
-Response: Number of records loaded.
+## 🚦 API Usage
 
-2. POST /logout
-Purpose: Syncs session memories/chats from Redis back to Supabase (batched), clears Redis user data.
+### Endpoints
 
-Request: { "user_id": string }
+#### `POST /login`  
+**Purpose**: Loads user memories & chats from Supabase into Redis.  
+**Body**:
+```json
+{ "user_id": "string" }
+```
 
-Response: Number of records synced.
+#### `POST /logout`  
+**Purpose**: Syncs session memories/chats from Redis to Supabase.  
+**Body**:
+```json
+{ "user_id": "string" }
+```
 
-3. POST /chat-semantic
-Purpose: LLM answers with semantic memory retrieval.
+#### `POST /chat-semantic`  
+**Purpose**: LLM answers with semantic memory retrieval.  
+**Body**:
+```json
+{ "user_id": "string", "user_input": "string" }
+```
 
-Body: { "user_id": string, "user_input": string }
+#### `POST /chat-rfm`  
+**Purpose**: LLM answers using only RFM-ranked important memories.
 
-Response: {response, timing metrics, retrieved memory blocks}
+#### `POST /chat-rfm-semantic`  
+**Purpose**: Combines semantic + RFM memory context for the most relevant responses.
 
-4. POST /chat-rfm
-Purpose: LLM answers using only RFM-ranked (Recency, Frequency, Magnitude) important memories.
+#### `GET /`  
+**Purpose**: Health check.
 
-Body: { "user_id": string, "user_input": string }
+---
 
-5. POST /chat-rfm-semantic
-Purpose: LLM answers with both semantic + RFM hybrid memory context.
+## 🧠 Memory System Design
 
-6. GET /
-Health check.
+### Semantic Retrieval
+- Vector embeddings (768D) via Google Embeddings API  
+- Top-k similar memories fetched using Redis HNSW  
 
-🧠 Memory System Design
-Semantic Retrieval:
-Vector embeddings (768D) via Google Embeddings API.
-Top similar memories fetched using k-NN query in Redis.
+### RFM Retrieval
+Scores based on:
+- **Recency**  
+- **Frequency**  
+- **Magnitude** (importance, LLM evaluated)  
 
-RFM Retrieval:
-Memories are scored by recency, frequency, and magnitude (importance via LLM).
+### Combined Retrieval
+- Use both semantic similarity & RFM scoring for highly contextual answers
 
-Combined Retrieval:
-Endpoints can combine semantically relevant and important (RFM) memories for most context-rich answers.
+### Memory Update Logic
+Each chat turn may extract new memory facts:
+- If duplicate: override  
+- If overlapping: merge  
+- If new: add to Redis  
+- Else: skip  
 
-Updating Memories:
+---
 
-On each conversation turn, new user memories are extracted (if found) by an LLM and processed:
+## ⛓️ Background Workers
 
-If duplicate: override
+### Message Worker
+- **Queue**: `message_logs_user_{user_id}`  
+- **Function**: Logs user-bot exchanges into Redis  
 
-If overlapping: merge with existing
+### Memory Worker
+- **Queue**: `memory_tasks_user_{user_id}`  
+- **Function**: Extracts, evaluates, and updates user memories  
 
-If new: add to Redis
+### Queue Cleanup
+- Periodic cleanup of empty RabbitMQ queues  
+- **Interval**: Configurable via `.env` (`CLEANUP_INTERVAL_SEC`)  
 
-Else: skip
+---
 
-⛓️ Background Workers
-Message Worker:
-Consumes message_logs_user_{user_id} queue. Logs each user-bot exchange into Redis.
+## 🗄️ Persistence & Caching
 
-Memory Worker:
-Consumes memory_tasks_user_{user_id} queue.
-Extracts, evaluates, and updates user memories accordingly.
+### Supabase/Postgres
 
-Queue Auto-Cleanup:
-A periodic cleaner deletes empty message/memory queues from RabbitMQ (configurable period).
+Two required tables:
 
-🗄️ Persistence & Caching
-Supabase/Postgres:
-These two tables are required for memory store.
-persona_category (user memories)
+```sql
+-- chat_message_logs
 create table public.chat_message_logs (
-  id uuid not null default gen_random_uuid (),
+  id uuid primary key default gen_random_uuid (),
   user_id text not null,
-  user_message text null,
-  bot_response text null,
-  timestamp timestamp with time zone null default now(),
-  constraint chat_message_logs_pkey primary key (id)
-) TABLESPACE pg_default;
+  user_message text,
+  bot_response text,
+  timestamp timestamp with time zone default now()
+);
+```
 
-chat_message_logs (chat logs)
+```sql
+-- persona_category
 create table public.persona_category (
-  id uuid not null default gen_random_uuid (),
+  id uuid primary key default gen_random_uuid (),
   user_id text not null,
-  memory_text text null,
-  embedding public.vector null,
-  created_at timestamp with time zone null default now(),
-  last_used timestamp with time zone null default now(),
-  frequency integer null default 1,
-  magnitude real null,
-  rfm_score real null,
-  constraint persona_category_pkey primary key (id)
-) TABLESPACE pg_default;
+  memory_text text,
+  embedding public.vector,
+  created_at timestamp with time zone default now(),
+  last_used timestamp with time zone default now(),
+  frequency integer default 1,
+  magnitude real,
+  rfm_score real
+);
+```
 
-create index IF not exists persona_category_embedding_hnsw_idx on public.persona_category using hnsw (embedding vector_cosine_ops)
-with
-  (m = '16', ef_construction = '64') TABLESPACE pg_default;
+HNSW Index for vector search:
 
-Bulk upsert on logout for durability.
+```sql
+create index if not exists persona_category_embedding_hnsw_idx 
+on public.persona_category using hnsw (embedding vector_cosine_ops)
+with (m = '16', ef_construction = '64');
+```
 
-Redis:
-redis-stack should be installeld (Already setup on VM) with indexes
+> Bulk upsert on logout for durability.
 
+---
 
-FT.CREATE memories_idx ON HASH PREFIX 1 memories: SCHEMA user_id TAG SEPARATOR , memory_text TEXT WEIGHT 1 embedding VECTOR HNSW 10 TYPE FLOAT32 DIM 768 DISTANCE_METRIC COSINE M 16 EF_CONSTRUCTION 200 rfm_score NUMERIC magnitude NUMERIC frequency NUMERIC created_at TEXT WEIGHT 1 last_used TEXT WEIGHT 1
+### Redis
 
-FT.CREATE chats_idx ON HASH PREFIX 1 chat: SCHEMA user_message TEXT WEIGHT 1 bot_response TEXT WEIGHT 1 user_id TAG SEPARATOR , timestamp TEXT WEIGHT 1
+Ensure redis-stack is installed.
 
-Stores session memories & chat logs for low-latency retrieval during conversation.
+#### Memory Index:
+```bash
+FT.CREATE memories_idx ON HASH PREFIX 1 memories: SCHEMA \
+user_id TAG SEPARATOR , \
+memory_text TEXT WEIGHT 1 \
+embedding VECTOR HNSW 10 TYPE FLOAT32 DIM 768 DISTANCE_METRIC COSINE M 16 EF_CONSTRUCTION 200 \
+rfm_score NUMERIC magnitude NUMERIC frequency NUMERIC \
+created_at TEXT WEIGHT 1 last_used TEXT WEIGHT 1
+```
 
-RabbitMQ:
+#### Chat Index:
+```bash
+FT.CREATE chats_idx ON HASH PREFIX 1 chat: SCHEMA \
+user_message TEXT WEIGHT 1 \
+bot_response TEXT WEIGHT 1 \
+user_id TAG SEPARATOR , \
+timestamp TEXT WEIGHT 1
+```
 
-Used for asynchronous message and memory logging/processing for scalability.
-(Already setup in VM.)
+---
 
+### RabbitMQ
 
+- Used for asynchronous message and memory logging & processing  
+- Already configured on the VM
 
-✨ Modular Code Structure
-chatbot.py - Main LLM and context management
+---
 
-main.py - FastAPI endpoints
+## ✨ Modular Code Structure
 
-memory_functions.py - Embedding, memory logic, summarization, updating/merging memories
+| File                         | Purpose                                           |
+|------------------------------|---------------------------------------------------|
+| `chatbot.py`                 | Main LLM and context management                  |
+| `main.py`                    | FastAPI endpoint definitions                     |
+| `memory_functions.py`        | Embedding, summarization, and memory logic      |
+| `redis_class.py`             | Redis utility and connection layer              |
+| `message_worker.py`          | RabbitMQ message logger                         |
+| `memory_worker.py`           | RabbitMQ memory updater                         |
+| `queue_cleanup.py`           | Periodic cleanup utility                        |
+| `RFM_functions.py`           | RFM scoring implementation                      |
+| `serialization.py`           | Supabase-safe upsert & validation               |
 
-redis_class.py - Redis connection and utility layer
+---
 
-message_worker.py & memory_worker.py - RabbitMQ workers
+## 👤 User Memory Management
 
-queue_cleanup.py - Periodic queue cleanup utility
+- LLM analyzes each user message for significant facts  
+- Filters out trivial or redundant info  
+- Updates stored only on logout (bulk flush)  
+- Real-time memory sync happens in Redis during session  
 
-RFM_functions.py - Recency, frequency, magnitude, and scorer functions
+---
 
-serialization.py - Safe upsert/validation for Supabase rows
+## 📝 Example `.env` File
 
-👤 User Memory Extraction & Management
-LLM analyzes each chat turn for new, significant facts about the user.
-
-Redundant, trivial, or overly generic facts are filtered.
-
-All updates are performed asynchronously in Redis until logout.
-
-📝 Example .env File
-text
+```env
 GOOGLE_API_KEY=your_google_genai_api_key
-SUPABASE_URL=your-supabase-project-url
-SUPABASE_KEY=your-supabase-service-role-key
+
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your_service_role_key
+
 RABBITMQ_URL=amqp://guest:guest@rabbitmq-host:5672/
 RABBITMQ_API_URL=http://rabbitmq-host:15672/api/queues
 RABBITMQ_API_USER=guest
 RABBITMQ_API_PASS=guest
+
 CLEANUP_INTERVAL_SEC=60
+
 REDIS_HOST=localhost
 REDIS_PORT=6379
 REDIS_DB=0
-⚠️ Notes
-Never commit actual API keys, database URIs, or production credentials.
+```
 
-You are responsible for providing your own Google GenAI, Supabase, and RabbitMQ configuration.
+---
 
-Make sure Redis, RabbitMQ, and Supabase are running and accessible before starting the app and background workers.
+## ⚠️ Notes
 
-🤝 Contributing
-PRs and issues welcome—custom logic for memory scoring, new retrieval strategies, or improved serialization are all possible extension points!
+- Never commit actual API keys or credentials  
+- You are responsible for providing your own:
+  - Google GenAI access  
+  - Supabase instance  
+  - Redis & RabbitMQ setup
