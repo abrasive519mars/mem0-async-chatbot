@@ -1,5 +1,3 @@
-# memory-worker/memory_functions.py
-
 import os
 import json
 import asyncio
@@ -8,7 +6,10 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+import hnswlib
 from supabase import create_client
+from redis.commands.search.query import Query
+import uuid
 
 from .RFM_functions import get_magnitude_for_query, get_recency_score, get_rfm_score
 
@@ -40,27 +41,23 @@ def time_ago_human(past_time_str, now=None):
         return "just now"
 
 
-async def fetch_last_m_messages(user_id: str, m: int = 5):
+async def fetch_last_m_messages(redis_client, user_id, m=5):
     """
-    Fetch the last m chat messages for context, returning only a humanized timestamp.
+    Retrieve the latest m chat messages for a user, with humanized timestamps.
     """
-    resp = await asyncio.to_thread(
-        lambda: supabase.table("chat_message_logs")
-                        .select("user_message, bot_response, timestamp")
-                        .eq("user_id", user_id)
-                        .order("timestamp", desc=True)
-                        .limit(m)
-                        .execute()
-    )
-    msgs = resp.data or []
+    # Corrected query string: use actual variable interpolation
+    query_str = f"@user_id:{{{user_id}}}"
+    query = Query(query_str).sort_by("timestamp", asc=False).paging(0, m)
+    res = redis_client.ft("chats_idx").search(query)
+    
     now = datetime.now(timezone.utc)
-    for msg in msgs:
-        if 'timestamp' in msg and msg['timestamp']:
-            msg['timestamp'] = time_ago_human(msg['timestamp'], now)
-        else:
-            msg['timestamp'] = 'unknown'
-    msgs.reverse()  # Oldest first
-    return msgs
+    messages = []
+    for doc in res.docs:
+        msg = doc.__dict__
+        msg['timestamp'] = time_ago_human(msg['timestamp'], now) if 'timestamp' in msg else "unknown"
+        messages.append(msg)
+    return messages
+
 
 async def summarize_user_memories(user_id: str) -> str:
     """
@@ -108,115 +105,105 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
 
 async def get_semantically_similar_memories(
-    user_id: str,
-    candidate: str,                # Make sure to pass your Supabase client
-    top_k: int = 3,
-    threshold: float = 0.7
-) -> list[dict]:
+    redis_client, user_id, input_embedding, k=3, bump_metadata=True, cutoff = 0.7
+):
     """
-    Retrieve up to top_k existing memories semantically similar to candidate using Supabase vector search.
-    """
-    # 1. Generate the embedding for the candidate memory
-    emb = await get_embedding(candidate)  # Should return a list/array of floats
-
-    # 2. Call the Supabase RPC function (runs in the database, uses HNSW index)
-    result = await asyncio.to_thread(
-        lambda: supabase.rpc(
-            "get_similar_memories",
-            {
-                "query_embedding": emb,
-                "target_user_id": user_id,
-                "similarity_threshold": threshold,
-                "max_results": top_k
-            }
-        ).execute()
-    )
-
-    now = datetime.now(timezone.utc)
-    memories = []
-    for row in (result.data or []):
-      memories.append({
-            "id": row["id"],
-            "text": row["memory_text"],
-            "sim": row["similarity_score"],
-            "created_at": time_ago_human(row.get("created_at"), now) if row.get("created_at") else "unknown",
-            "last_used": time_ago_human(row.get("last_used"), now) if row.get("last_used") else "unknown"
-        })
-    return memories
+    Retrieve top-k semantically similar memories for a user from Redis.
     
-
-
-
-async def get_highest_rfm_memories(user_id: str, top_k: int) -> list[str]:
+    Args:
+        redis_client: Your redis-py client (.client from RedisManager)
+        user_id (str): The user ID to filter for
+        input_embedding (list or np.ndarray): The embedding to compare against
+        k (int): How many results to return
+        bump_metadata (bool): Increment frequency/set last_used if True
+        cutoff (float or None): Skip results with distance > cutoff (if set)
+    Returns:
+        List of dicts: Each with id, text, sim, created_at, last_used
     """
-    Return top_k memory_texts with the highest RFM scores for the given user.
-    """
-    result = await asyncio.to_thread(
-        lambda: supabase.table("persona_category")
-                        .select("memory_text", "frequency", "magnitude", "rfm_score")
-                        .eq("user_id", user_id)
-                        .order("rfm_score", desc=True)
-                        .limit(top_k)
-                        .execute()
+    # Ensure correct embedding dtype and shape
+    vec = np.array(input_embedding, dtype=np.float32)
+    if vec.shape[0] != 768:
+        raise ValueError(f"Embedding must be length 768, got {vec.shape}")
+
+    # Build RediSearch KNN query with user filter
+    query_str = f"@user_id:{{{user_id}}}=>[KNN {k} @embedding $vec as score]"
+    params = {"vec": vec.tobytes()}
+    query = (
+        Query(query_str)
+        .return_fields("id", "memory_text", "score", "created_at", "last_used")
+        .sort_by("score", asc=True)
+        .paging(0, k)
+        .dialect(2)
     )
 
-    memories = []
-    for row in (result.data or []):
-      memories.append({
-            "text": row["memory_text"],
-            "frequency": row["frequency"],
-            "magnitude": row["magnitude"],
-            "rfm_score": row["rfm_score"]
+    # Execute the search (in a thread for async compatibility)
+    res = await asyncio.to_thread(
+        redis_client.ft("memories_idx").search, query, query_params=params
+    )
+    now_iso = datetime.now(timezone.utc).isoformat()
+    results = []
+    for doc in res.docs:
+        sim_score = float(doc.score)
+        if cutoff is not None and sim_score > cutoff:
+            continue
+        key = f"memories:{user_id}:{doc.id}"
+        if bump_metadata:
+            redis_client.hincrby(key, "frequency", 1)
+            redis_client.hset(key, "last_used", now_iso)
+        results.append({
+            "id": getattr(doc, "id", None),
+            "text": getattr(doc, "memory_text", None),
+            "sim": sim_score,
+            "created_at": getattr(doc, "created_at", None),
+            "last_used": now_iso if bump_metadata else getattr(doc, "last_used", None)
         })
-    return memories
+    return results
+
+
+async def get_highest_rfm_memories(redis_client, user_id, k=3):
+    query = f"@user_id:{{{user_id}}}"
+    query = Query(query).sort_by("rfm_score", asc=False).paging(0, k)
+    res = redis_client.ft("memories_idx").search(query)
+    results = []
+    for doc in res.docs:
+        results.append({
+            "id": doc.id,
+            "text": doc.memory_text,
+            "rfm_score": float(doc.rfm_score) if hasattr(doc, 'rfm_score') else None
+        })
+    return results
 
 
 
-async def generate_candidate_memories(
+async def generate_candidate_memories(     
     user_id: str,
     user_msg: str,
     bot_resp: str,
-    m: int = 5
 ) -> list[str]:
     """
     Extract new memories from recent conversation if they contain novel insights.
     """
-    last_msgs_task =  fetch_last_m_messages(user_id, m)
-    summary_task =  summarize_user_memories(user_id)
-    last_msgs, summary = await asyncio.gather(last_msgs_task, summary_task)
-    chat_hist = "\n".join([f"User: {c['user_message']}\nBot: {c['bot_response']}" for c in last_msgs])
-    summary_indented = summary.replace("\n", "\n     ")
-    chat_hist_indented = chat_hist.replace("\n", "\n     ")
-
+    
     prompt = f"""
-You are a Memory Extraction Engine. Your sole task is to extract up to TWO novel memories *directly* from the current exchange. Use the summary and recent chat history as background context for generating the candidate memory.
+You are a **Memory Extraction Engine**.
 
-1. CONTEXT (for reference only):
-• Profile Summary:  
-    {summary_indented}
-• Recent History (last {m} turns):  
-    {chat_hist_indented}
+TASK ─ Identify **0-2 NEW** user memories found *only* in the exchange below.
 
-2. CURRENT EXCHANGE (use only this for generating memories):
+RULES
+• Start each memory with “- ”.  
+• Around **15 words** per memory, third-person, about the *user*.  
+• Include specific nouns, verbs, and context words from user's message for better retrieval in the future.  
+• Skip if nothing new → output single line: **- None**
+
+CURRENT EXCHANGE (ON WHCIH YOU ARE SUPPOSED TO GENERATE MEMORIES ON)
 User: {user_msg}
-Bot:  {bot_resp}
+Bot : {bot_resp}
 
-3. MEMORY GENERATION RULES:
-• Generate 0–2 bullet points, each starting with “- ”.
-• Each memory must be a single, complete, third-person sentence about the user.
-• Each memory must be exactly 15 words long.
-• Each memory must include all important keywords from the user's statements to maximize semantic retrievability.
-• Be specific: include details (what, when, why, how) if present.
-• Extract any memory that is present in the current exchange, even if it is similar to existing memories. Repeated topics are valuable for tracking frequency and recency.
-• Use key nouns and verbs from the user's statements.
-• If the user contradicts a previous memory, phrase the new memory to reflect the update.
-• If no new memory, output exactly “- None”.
+EXAMPLE OUTPUT 
+- Memory one.
+- Memory two.
 
-4. OUTPUT FORMAT:
-- Memory sentence one.
-- Memory sentence two.
-
-Now, generate the memories based on the CURRENT EXCHANGE.
+OUTPUT: 
 """
 
 
@@ -226,27 +213,26 @@ Now, generate the memories based on the CURRENT EXCHANGE.
         return []
     return [line.strip("- ").strip() for line in text.split("\n") if line.strip()]
 
-async def update_user_memory(candidate: str, user_id: str, user_msg: str, bot_resp: str) -> str:
+def clean_mem_id(mem_id):
+    return mem_id[-36:]
+
+
+async def update_user_memory(redis_manager, candidate: str, user_id: str, user_msg: str, bot_resp: str) -> str:
     """
-    Decide add/merge/override and update Supabase accordingly.
+    Decide add/merge/override and update Redis accordingly.
+    All operations happen in Redis during the session.
     """
+
     context_pair = f"User: {user_msg}\nBot: {bot_resp}"
     now = datetime.now(timezone.utc).isoformat()
-    sims = await get_semantically_similar_memories(user_id, candidate)
+    emb = await get_embedding(candidate)
+    sims = await get_semantically_similar_memories(redis_manager.client, user_id, emb, k=3, bump_metadata=False)
+
+    
     alias = {str(i+1): sim["id"] for i, sim in enumerate(sims)}
-    formatted = [f"[{i+1}] {sim["text"]}" for i, sim in enumerate(sims)]
-    if not sims:
-        emb = await get_embedding(candidate)
-        magnitude = await get_magnitude_for_query(candidate)
-        rfm = get_rfm_score(now, frequency=1, magnitude=magnitude)
-        await asyncio.to_thread(
-            lambda: supabase.table("persona_category")
-                          .insert({"user_id":user_id,"memory_text":candidate,"embedding":json.dumps(emb), "magnitude": magnitude, "last_used": now, "frequency": 1, "rfm_score": rfm})
-                          .execute()
-        )
-        return "Memory added."
+     
     prompt = f"""
-You are a Memory Manager service. Your job is to decide how to integrate a new candidate memory into a user's existing memories. Base your decision solely on the content and meaning of the memories, and on relative semantic similarity scores.
+You are a Memory Manager for a chatbot service. Your job is to decide how to integrate a new candidate memory into a chatbot's existing memories. Base your decision solely on the content and meaning of the memories, and on relative semantic similarity scores.
 
 CURRENT EXCHANGE, on which the candidate memory is extracted:
 {context_pair}
@@ -255,13 +241,13 @@ INPUTS:
 • Candidate memory:
   "{candidate}"
 
-• Existing memories (up to 5):
+• Existing semantically similarmemories (up to 5):
 {chr(10).join(f"Index: {i+1} | Text: {sim['text']} | Similarity: {sim['sim']}" for i, sim in enumerate(sims))}
 
 DECISION RULES:
 1. OVERRIDE if it fully duplicates or directly contradicts an existing memory.
 2. MERGE only if it adds new, non-redundant information to an existing memory.
-3. ADD if it is a genuinely new fact or insight not present in any existing memory.
+3. ADD if it is a genuinely new fact or insight not present in any existing memory, or there are no semantically similar memories.
 4. NONE if it is redundant or not useful.
 
 OUTPUT (exactly one of the following, no extra text):
@@ -278,69 +264,93 @@ override:3
 Do not deviate from this formatting as it will result in your system failing.
 """
 
+    dec = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    ).text.strip().lower()
 
-    dec = client.models.generate_content(model="gemini-2.5-flash", contents=prompt).text.strip().lower()
-    if dec == "add":
-        emb = await get_embedding(candidate)
+    if dec == "None":
+        return "Redundant, no memory update."
+    
+    elif dec == "add":
         magnitude = await get_magnitude_for_query(candidate)
         rfm = get_rfm_score(now, frequency=1, magnitude=magnitude)
-        await asyncio.to_thread(
-            lambda: supabase.table("persona_category")
-                          .insert({"user_id":user_id,"memory_text":candidate,"embedding":json.dumps(emb), "magnitude": magnitude, "last_used": now, "frequency": 1, "rfm_score": rfm})
-                          .execute()
-        )
+        emb_bytes = np.array(emb, dtype=np.float32).tobytes()
+        mem_id = str(uuid.uuid4())
+        memory_dict = {
+            "id": mem_id,
+            "user_id": user_id,
+            "memory_text": candidate,
+            "embedding": emb,
+            "magnitude": magnitude,
+            "last_used": now,
+            "frequency": 1,
+            "rfm_score": rfm,
+            "created_at": now
+        }
+
+        redis_manager.store_memory(user_id, mem_id, memory_dict)
         return "Memory added."
-    if dec.startswith("merge:"):
-        idxs = [i.strip() for i in dec.replace("merge:","").split(",")]
+        
+    elif dec.startswith("merge:"):
+        idxs = [i.strip() for i in dec.replace("merge:", "").split(",")]
+        merged_log = ""
         for idx in idxs:
-            id_ = alias.get(idx)
-            if id_:
-                existing_row = await asyncio.to_thread(
-                    lambda: supabase.table("persona_category")
-                                .select("frequency")
-                                .eq("id", id_)
-                                .single()
-                                .execute()
-                )
-                existing_freq = existing_row.data.get("frequency", 1)
+            mem_id = alias.get(idx)
+            
+            current_mem = redis_manager.client.hgetall(f"{mem_id}")
+            
+            current_text = str(current_mem[b'memory_text'].decode('utf-8'))
+            current_freq = int(current_mem[b'frequency'].decode('utf-8'))
+            
+            merged_text = await llm_consolidate(current_text, candidate)
+            emb_new = await get_embedding(merged_text)
+            magnitude = await get_magnitude_for_query(merged_text)
+            rfm = get_rfm_score(now, frequency=current_freq + 1, magnitude=magnitude)
+            memory_dict = {
+                "id": clean_mem_id(mem_id),
+                "user_id": user_id,
+                "memory_text": merged_text,
+                "embedding": emb,
+                "magnitude": magnitude,
+                "last_used": now,
+                "frequency": current_freq + 1,
+                "rfm_score": rfm,
+            }
+            
+            redis_manager.store_memory(user_id, memory_dict["id"], memory_dict)
+            merged_log += f"Memory ID {mem_id} {current_text[:15]} modified to {merged_text[:15]}\n"
+        return f"Total {len(idxs)} memories merged for {user_id}:\n" + merged_log  
 
-                mem_to_merge = sims[int(idx)-1]["text"]
-                
-                merged = await llm_consolidate(mem_to_merge, candidate)
-                emb = await get_embedding(merged)
-                magnitude = await get_magnitude_for_query(merged)
-                rfm = get_rfm_score(now, frequency= existing_freq, magnitude=magnitude)
-                await asyncio.to_thread(
-                    lambda: supabase.table("persona_category")
-                                .update({"memory_text":merged,"embedding":json.dumps(emb), "magnitude": magnitude, "last_used": now, "frequency": existing_freq, "rfm_score": rfm})
-                                .eq("id", id_).execute())                
-
-        return f"Merged with {len(idxs)} as new memories"
-    if dec.startswith("override:"):
-        idxs = [i.strip() for i in dec.replace("override:","").split(",")]
-        emb = await get_embedding(candidate)
-        magnitude = await get_magnitude_for_query(candidate)
+    elif dec.startswith("override:"):
+        idxs = [i.strip() for i in dec.replace("override:", "").split(",")]
+        override_log = ""
         for idx in idxs:
-            id_ = alias.get(idx)
-            if id_:
-                existing_row = await asyncio.to_thread(
-                    lambda: supabase.table("persona_category")
-                                .select("frequency")
-                                .eq("id", id_)
-                                .single()
-                                .execute()
-                )
-                existing_freq = existing_row.data.get("frequency", 1)
+            mem_id = alias.get(idx)
+            current_mem = redis_manager.client.hgetall(f"{mem_id}")
+            current_text = str(current_mem[b'memory_text'].decode('utf-8'))
 
-                rfm = get_rfm_score(now, frequency= existing_freq, magnitude=magnitude)
-                
-                await asyncio.to_thread(
-                    lambda: supabase.table("persona_category")
-                                  .update({"memory_text":candidate,"embedding":json.dumps(emb), "magnitude": magnitude, "last_used": now, "frequency": existing_freq +1, "rfm_score": rfm})
-                                  .eq("id", id_).execute()
-                )
-        return f"Overridden {len(idxs)}"
-    return "No action taken."
+            current_freq = int(current_mem[b'frequency'].decode('utf-8'))
+            magnitude = await get_magnitude_for_query(candidate)
+            rfm = get_rfm_score(now, frequency=current_freq + 1, magnitude=magnitude)
+
+            memory_dict = {
+                "id": clean_mem_id(mem_id),
+                "user_id": user_id,
+                "memory_text": candidate,
+                "embedding": emb,
+                "magnitude": magnitude,
+                "last_used": now,
+                "frequency": current_freq + 1,
+                "rfm_score": rfm,
+            }
+            redis_manager.store_memory(user_id, memory_dict["id"], memory_dict)
+            override_log += f"Memory ID {mem_id} {current_text[:15]} overriden to {candidate[:15]}\n"
+        return f"Total {len(idxs)} overriden for {user_id}:\n" + override_log        
+    
+    return "No memory update." 
+
+
 
 async def llm_consolidate(memory: str, candidate: str) -> str:
     prompt = f"""
@@ -363,17 +373,23 @@ Merged memory (must contain all important keywords):
     res = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
     return res.text.strip()
 
-async def log_message(user_id: str, user_input: str, bot_response: str):
+async def log_message(redis_manager, user_id: str, user_input: str, bot_response: str):
     """
-    Persist every user-bot exchange chronologically.
+    Persist every user-bot exchange chronologically in Redis.
     """
-    await asyncio.to_thread(
-        lambda: supabase.table("chat_message_logs")
-                      .insert({
-                          "user_id": user_id,
-                          "user_message": user_input,
-                          "bot_response": bot_response,
-                          "timestamp": datetime.now(timezone.utc).isoformat()
-                      })
-                      .execute()                  
-    )
+    # Generate a unique chat ID
+    chat_id = str(uuid.uuid4())
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    # Build the chat record
+    chat_record = {
+        "id": chat_id,
+        "user_id": user_id,
+        "user_message": user_input,
+        "bot_response": bot_response,
+        "timestamp": timestamp,
+    }
+
+    redis_manager.store_chat(user_id, chat_id, chat_record)
+    
+
