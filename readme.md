@@ -78,7 +78,7 @@ SUPABASE_URL=your_supabase_project_url
 SUPABASE_KEY=your_supabase_service_role_key
 
 # RabbitMQ
-RABBITMQ_URL=amqp://myadmin:password@34.131.220.37:5672/
+RABBITMQ_URL=amqp://user:password@host:5672/
 RABBITMQ_API_URL=https://host/api
 RABBITMQ_API_USER=user
 RABBITMQ_API_PASS=password
