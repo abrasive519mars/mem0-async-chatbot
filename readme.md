@@ -78,17 +78,17 @@ SUPABASE_URL=your_supabase_project_url
 SUPABASE_KEY=your_supabase_service_role_key
 
 # RabbitMQ
-RABBITMQ_URL=amqp://myadmin:strongpassword@34.131.220.37:5672/
-RABBITMQ_API_URL=http://34.131.220.37:15672/api/queues
-RABBITMQ_API_USER=myadmin
-RABBITMQ_API_PASS=strongpassword
+RABBITMQ_URL=amqp://myadmin:password@34.131.220.37:5672/
+RABBITMQ_API_URL=https://host/api
+RABBITMQ_API_USER=user
+RABBITMQ_API_PASS=password
 
 # Redis
-REDIS_HOST=34.131.107.77
+REDIS_HOST=localhost
 REDIS_PORT=6379
 
 # App Settings
-ENV=development
+ENV=<redacted>
 LOG_LEVEL=debug
 ```
 
